@@ -66,42 +66,50 @@ class NavDP_Base_Datset(Dataset):
         
         if preload == False:
             for group_dir in self.dataset_dirs: # gibson_zed, 3dfront ...
-                all_scene_dirs = np.array([p for p in os.listdir(os.path.join(root_dirs,group_dir))])
+                group_path = os.path.join(root_dirs, group_dir)
+                if not os.path.isdir(group_path):
+                    continue
+                all_scene_dirs = np.array([p for p in os.listdir(group_path) if os.path.isdir(os.path.join(group_path, p))])
                 select_scene_dirs = all_scene_dirs[np.arange(0,all_scene_dirs.shape[0],1/self.scene_scale_size).astype(np.int32)]
-                for scene_dir in select_scene_dirs:
-                    all_traj_dirs = np.array([p for p in os.listdir(os.path.join(root_dirs,group_dir,scene_dir))])
-                    select_traj_dirs = all_traj_dirs[np.arange(0,all_traj_dirs.shape[0],1/self.trajectory_data_scale).astype(np.int32)]
-                    for traj_dir in tqdm(select_traj_dirs):
-                        entire_task_dir = os.path.join(root_dirs,group_dir,scene_dir,traj_dir)
-                        rgb_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.rgb/")
-                        depth_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.depth/")
-                        data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet') # intrinsic, extrinsic, cam_traj, path
-                        afford_path = os.path.join(entire_task_dir,'data/chunk-000/path.ply')
-                        rgbs_length = len([p for p in os.listdir(rgb_dir)])
-                        depths_length = len([p for p in os.listdir(depth_dir)])
+                for scene_dir in tqdm(select_scene_dirs):
+                    scene_path = os.path.join(root_dirs,group_dir,scene_dir)
+                    if not os.path.isdir(scene_path):
+                        continue
+                    entire_task_dir = os.path.join(root_dirs,group_dir,scene_dir)
+                    rgb_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.rgb/")
+                    depth_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.depth/")
+                    data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet') # intrinsic, extrinsic, cam_traj, path
+                    afford_path = os.path.join(entire_task_dir,'data/chunk-000/path.ply')
+                    
+                    # 检查必要的目录和文件是否存在
+                    if not os.path.exists(rgb_dir) or not os.path.exists(depth_dir) or not os.path.exists(data_path):
+                        continue
+                    rgbs_length = len([p for p in os.listdir(rgb_dir)])
+                    depths_length = len([p for p in os.listdir(depth_dir)])
+                    
+                    rgbs_path = []
+                    depths_path = []
+                    if depths_length != rgbs_length:
+                        continue
+                    for i in range(rgbs_length):
+                        rgbs_path.append(os.path.join(rgb_dir,"%d.jpg"%i))
+                        depths_path.append(os.path.join(depth_dir,"%d.png"%i))
+                    if os.path.exists(data_path) == False:
+                        continue
+                    self.trajectory_dirs.append(entire_task_dir)
+                    self.trajectory_data_dir.append(data_path)
+                    self.trajectory_rgb_path.append(rgbs_path)
+                    self.trajectory_depth_path.append(depths_path)
+                    self.trajectory_afford_path.append(afford_path)
                         
-                        rgbs_path = []
-                        depths_path = []
-                        if depths_length != rgbs_length:
-                            continue
-                        for i in range(rgbs_length):
-                            rgbs_path.append(os.path.join(rgb_dir,"%d.jpg"%i))
-                            depths_path.append(os.path.join(depth_dir,"%d.png"%i))
-                        if os.path.exists(data_path) == False:
-                            continue
-                        self.trajectory_dirs.append(entire_task_dir)
-                        self.trajectory_data_dir.append(data_path)
-                        self.trajectory_rgb_path.append(rgbs_path)
-                        self.trajectory_depth_path.append(depths_path)
-                        self.trajectory_afford_path.append(afford_path)
-                        
-            save_dict = {'trajectory_dirs':self.trajectory_dirs,
-                         'trajectory_data_dir':self.trajectory_data_dir,
-                         'trajectory_rgb_path':self.trajectory_rgb_path,
-                         'trajectory_depth_path':self.trajectory_depth_path,
-                         'trajectory_afford_path':self.trajectory_afford_path}
-            with open(preload_path,'w') as f:
-                json.dump(save_dict,f,indent=4)
+            if preload_path and isinstance(preload_path, str):
+                save_dict = {'trajectory_dirs':self.trajectory_dirs,
+                             'trajectory_data_dir':self.trajectory_data_dir,
+                             'trajectory_rgb_path':self.trajectory_rgb_path,
+                             'trajectory_depth_path':self.trajectory_depth_path,
+                             'trajectory_afford_path':self.trajectory_afford_path}
+                with open(preload_path,'w') as f:
+                    json.dump(save_dict,f,indent=4)
         else:
             load_dict = json.load(open(preload_path,'r'))
             self.trajectory_dirs = load_dict['trajectory_dirs'] * 50
@@ -432,18 +440,22 @@ def navdp_collate_fn(batch):
     
 if __name__ == "__main__":
     # Debug
-    dataset = NavDP_Base_Datset("/path/to/nav_20w_lerobot/",
-                                "/path/to/navdp_trainer/output_test/multiview_dataset_lerobot.json",
-                                8,24,224,trajectory_data_scale=1.0,scene_data_scale=1.0,preload=True)
-    for i in range(200):
+    dataset = NavDP_Base_Datset("/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
+                                8,24,224,trajectory_data_scale=1.0,scene_data_scale=1.0,preload=False)
+    for i in range(3):
        point_goal,image_goal,pixel_goal,memory_images,depth_image,pred_actions,augment_actions,pred_critic,augment_critic,pixel_flag = dataset.__getitem__(i)
-       pixel_obs = pixel_goal[:,:,0:3] * 255
-       pixel_obs[pixel_goal[:,:,3]==1] = np.array([0,0,255])
        
-       draw_current_image = image_goal[:,:,3:6].copy()*255
+       # 转换为numpy数组进行处理
+       pixel_goal_np = pixel_goal.numpy()
+       image_goal_np = image_goal.numpy()
+       
+       pixel_obs = pixel_goal_np[:,:,0:3] * 255
+       pixel_obs[pixel_goal_np[:,:,3]==1] = np.array([0,0,255])
+       
+       draw_current_image = image_goal_np[:,:,3:6].copy()*255
        draw_current_image = cv2.putText(draw_current_image,"Current-Image",(50,30),cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255))
        
-       draw_goal_image = image_goal[:,:,0:3].copy()*255
+       draw_goal_image = image_goal_np[:,:,0:3].copy()*255
        draw_goal_image = cv2.putText(draw_goal_image,"Image-Goal",(50,30),cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255))
        
        draw_pixel_image = pixel_obs.copy()
@@ -451,5 +463,8 @@ if __name__ == "__main__":
        
        goal_info_image = np.concatenate((draw_current_image,draw_goal_image,draw_pixel_image),axis=1)
        goal_info_image = cv2.putText(goal_info_image,"PointGoal=[{:.3f}, {:.3f}, {:.3f}]".format(*point_goal),(190,210),cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255))
+       
+       # 创建输出目录
+       os.makedirs("./output_test", exist_ok=True)
        cv2.imwrite("./output_test/goal_information.png",goal_info_image)
        
