@@ -40,7 +40,8 @@ class NavDP_Base_Datset(Dataset):
                  image_size=224,
                  scene_data_scale=1.0,
                  trajectory_data_scale=1.0,
-                 debug=False,
+                 debug=False,              # 👈 调试开关
+                 debug_max_scenes=2,       # 👈 最多加载多少个场景
                  preload=False,
                  random_digit=False,
                  prior_sample=False):
@@ -65,42 +66,47 @@ class NavDP_Base_Datset(Dataset):
         self._last_time = None
         
         if preload == False:
+            scene_cnt = 0
             for group_dir in self.dataset_dirs: # gibson_zed, 3dfront ...
                 group_path = os.path.join(root_dirs, group_dir)
                 if not os.path.isdir(group_path):
                     continue
+
                 all_scene_dirs = np.array([p for p in os.listdir(group_path) if os.path.isdir(os.path.join(group_path, p))])
                 select_scene_dirs = all_scene_dirs[np.arange(0,all_scene_dirs.shape[0],1/self.scene_scale_size).astype(np.int32)]
-                for scene_dir in tqdm(select_scene_dirs):
+                
+                for scene_id, scene_dir in enumerate(tqdm(select_scene_dirs)):
                     scene_path = os.path.join(root_dirs,group_dir,scene_dir)
                     if not os.path.isdir(scene_path):
                         continue
+
                     entire_task_dir = os.path.join(root_dirs,group_dir,scene_dir)
                     rgb_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.rgb/")
                     depth_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.depth/")
-                    data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet') # intrinsic, extrinsic, cam_traj, path
+                    data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet')
                     afford_path = os.path.join(entire_task_dir,'data/chunk-000/path.ply')
                     
-                    # 检查必要的目录和文件是否存在
                     if not os.path.exists(rgb_dir) or not os.path.exists(depth_dir) or not os.path.exists(data_path):
                         continue
-                    rgbs_length = len([p for p in os.listdir(rgb_dir)])
-                    depths_length = len([p for p in os.listdir(depth_dir)])
-                    
-                    rgbs_path = []
-                    depths_path = []
+
+                    rgbs_length = len(os.listdir(rgb_dir))
+                    depths_length = len(os.listdir(depth_dir))
                     if depths_length != rgbs_length:
                         continue
-                    for i in range(rgbs_length):
-                        rgbs_path.append(os.path.join(rgb_dir,"%d.jpg"%i))
-                        depths_path.append(os.path.join(depth_dir,"%d.png"%i))
-                    if os.path.exists(data_path) == False:
-                        continue
+
+                    rgbs_path = [os.path.join(rgb_dir, f"{i}.jpg") for i in range(rgbs_length)]
+                    depths_path = [os.path.join(depth_dir, f"{i}.png") for i in range(depths_length)]
+
                     self.trajectory_dirs.append(entire_task_dir)
                     self.trajectory_data_dir.append(data_path)
                     self.trajectory_rgb_path.append(rgbs_path)
                     self.trajectory_depth_path.append(depths_path)
                     self.trajectory_afford_path.append(afford_path)
+
+                scene_cnt += 1
+                # 👇 debug 模式下，限制总共加载的场景数
+                if self.debug and scene_cnt >= debug_max_scenes:
+                    break
                         
             if preload_path and isinstance(preload_path, str):
                 save_dict = {'trajectory_dirs':self.trajectory_dirs,
@@ -117,7 +123,7 @@ class NavDP_Base_Datset(Dataset):
             self.trajectory_rgb_path = load_dict['trajectory_rgb_path'] * 50
             self.trajectory_depth_path = load_dict['trajectory_depth_path'] * 50
             self.trajectory_afford_path = load_dict['trajectory_afford_path'] * 50
-
+    
     def __len__(self):
         return len(self.trajectory_dirs)
     

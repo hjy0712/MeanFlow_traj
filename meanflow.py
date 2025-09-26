@@ -1,9 +1,3 @@
-"""
-    meanflow for traj generation
-
-    by houjunyi, 2025-09-24
-"""
-
 import torch
 import torch.nn.functional as F
 from einops import rearrange
@@ -213,36 +207,6 @@ class MeanFlow:
 
             v = model(z, t, r, c)
             z = z - (t_-r_) * v
-
-        z = self.normer.unnorm(z)
-        return z
-
-    @torch.no_grad()
-    def sample(self, model, cond, batch_size=1, sample_steps=5, device='cuda'):
-        """
-        General sampling for continuous condition (not class-based).
-        cond: 条件向量, shape (B, L, D) 或 (B, D)
-        """
-        model.eval()
-
-        z = torch.randn(batch_size, self.channels,
-                        self.image_size, self.image_size,
-                        device=device)
-
-        t_vals = torch.linspace(1.0, 0.0, sample_steps + 1, device=device)
-
-        for i in range(sample_steps):
-            t = torch.full((z.size(0),), t_vals[i], device=device)
-            r = torch.full((z.size(0),), t_vals[i+1], device=device)
-
-            t_ = rearrange(t, "b -> b 1 1 1").detach().clone()
-            r_ = rearrange(r, "b -> b 1 1 1").detach().clone()
-
-            # 模型前向：这里 y=cond 可以是任意条件，而不是类别
-            v = model(z, t, r, y=cond)
-
-            # 更新 z
-            z = z - (t_ - r_) * v
 
         z = self.normer.unnorm(z)
         return z
