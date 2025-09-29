@@ -164,7 +164,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_point.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_point.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -195,7 +195,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -226,7 +226,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -256,7 +256,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(input_images.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
             all_trajectory = all_trajectory.reshape(input_images.shape[0], sample_num, self.predict_size, 3)
 
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
@@ -292,7 +292,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -329,7 +329,7 @@ class NavDP_Policy_Flow(nn.Module):
         v_target = a_target_interp - a_start
 
         # mean squared error
-        loss = F.mse_loss(v_pred, v_target)
+        loss = F.mse_loss(v_pred * 10.0, v_target)
         return loss
 
     def process_target_trajectory(self, a_target, a_start):

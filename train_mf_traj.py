@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from accelerate import Accelerator
+import matplotlib.pyplot as plt
+import numpy as np
 
 from models_traj.policy_network import NavDP_Policy_Flow
 from dataset.dataset3dfront import NavDP_Base_Datset, navdp_collate_fn
@@ -132,19 +134,21 @@ def main():
                 ckpt_path = f"runs/checkpoints/navdpflow_step_{global_step}.pt"
                 accelerator.save(model.state_dict(), ckpt_path)
 
-            # # ---------- sample ----------
-            # if accelerator.is_main_process and global_step % sample_step == 0:
-            #     model.eval()
-            #     with torch.no_grad():
-            #         trajs, critics, pos_traj, neg_traj = model.predict_pointgoal_action(
-            #             goal_point=goal_point[:2],
-            #             input_images=input_images[:2],
-            #             input_depths=input_depths[:2],
-            #             sample_num=8,
-            #         )
-            #         import numpy as np
-            #         np.save(f"runs/images/sample_step_{global_step}.npy", trajs)
-            #     model.train()
+            # ---------- sample ----------
+            if accelerator.is_main_process and global_step % sample_step == 0:
+                model.eval()
+                with torch.no_grad():
+                    # 随机选取一个场景进行采样
+                    sample_batch_size = 1
+                    sample_pic = test_in_train(sample_batch_size, dataloader, device, model, global_step)
+                    # 保存采样图片
+                    if sample_pic is not None:
+                        os.makedirs("runs/images", exist_ok=True)
+                        img_save_path = f"runs/images/step_{global_step}.png"
+                        sample_pic.savefig(img_save_path, dpi=150, bbox_inches='tight')
+                        print(f"Sample image saved at step {global_step} to {img_save_path}")
+                        
+                model.train()
 
     # ---------- final save checkpoint ----------
     if accelerator.is_main_process:
@@ -152,6 +156,70 @@ def main():
         accelerator.save(model.state_dict(), ckpt_path)
         writer.close()
 
+def test_in_train(sample_batch_size, dataloader, device, model, global_step):
+    
+    # 随机获取一个批次的数据
+    sample_batch = next(dataloader)
+    
+    # 获取采样数据
+    sample_traj_target = sample_batch["batch_labels"].to(device)[:sample_batch_size]
+    sample_input_images = sample_batch["batch_rgb"].to(device)[:sample_batch_size]
+    sample_input_depths = sample_batch["batch_depth"].to(device)[:sample_batch_size]
+    sample_goal_point = sample_batch["batch_pg"].to(device)[:sample_batch_size]
+    
+    # 模型推理轨迹
+    trajs, critics, pos_traj, neg_traj = model.predict_pointgoal_action(
+        goal_point=sample_goal_point,
+        input_images=sample_input_images,
+        input_depths=sample_input_depths,
+        sample_num=8,
+    )
+    
+    # 创建图像
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    
+    # 绘制数据集监督轨迹（红色）
+    for i in range(sample_batch_size):
+        target_traj = sample_traj_target[i].cpu().numpy()
+        # 添加起点 (0, 0)
+        full_traj = np.vstack([[0, 0, 0], target_traj])
+        
+        # 绘制轨迹
+        ax.plot(full_traj[:, 0], full_traj[:, 1], 'r-', linewidth=2, alpha=0.7, label='Ground Truth' if i == 0 else "")
+        # 标记起点和终点
+        ax.scatter(full_traj[0, 0], full_traj[0, 1], color='green', s=100, marker='o', label='Start' if i == 0 else "")
+        ax.scatter(full_traj[-1, 0], full_traj[-1, 1], color='red', s=100, marker='s', label='GT End' if i == 0 else "")
+    
+    # 绘制模型推理轨迹（黑色）
+    for i in range(sample_batch_size):
+        # 选择critic值最高的轨迹
+        best_idx = np.argmax(critics[i])
+        pred_traj = trajs[i, best_idx]
+        
+        # 计算累积位置
+        cumulative_pos = np.cumsum(pred_traj, axis=0)
+        # 添加起点 (0, 0)
+        full_traj = np.vstack([[0, 0, 0], cumulative_pos])
+        
+        # 绘制轨迹
+        ax.plot(full_traj[:, 0], full_traj[:, 1], 'k-', linewidth=2, alpha=0.7, label='Predicted' if i == 0 else "")
+        # 标记终点
+        ax.scatter(full_traj[-1, 0], full_traj[-1, 1], color='black', s=100, marker='^', label='Pred End' if i == 0 else "")
+    
+    # 设置图像属性
+    ax.set_xlabel('X Position')
+    ax.set_ylabel('Y Position')
+    ax.set_title(f'Trajectory Comparison - Step {global_step}')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.axis('equal')
+    
+    # 保存图像
+    plt.tight_layout()
+    sample_pic = fig
+    plt.close(fig)  # 关闭图形以释放内存
+    
+    return sample_pic
 
 if __name__ == "__main__":
     main()
