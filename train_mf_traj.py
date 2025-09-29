@@ -20,8 +20,9 @@ def main():
     # ---------- config ----------
     n_steps = 200000
     batch_size = 16
-    log_step = 200
+    log_step = 100
     sample_step = 100
+    ckpt_step = 500
     lr = 1e-4
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -35,8 +36,12 @@ def main():
         writer = SummaryWriter(log_dir="runs/tensorboard_logs")
 
     # ---------- dataset ----------
+    base_paths = [
+        "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",  # 第一个基础路径
+        "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"  # 第二个基础路径（请替换为实际路径）
+    ]
     dataset = NavDP_Base_Datset(
-        root_dirs="/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
+        root_dirs=base_paths,
         memory_size=8,
         predict_size=24,
         image_size=224,
@@ -122,6 +127,11 @@ def main():
                 writer.add_scalar("Loss/train", avg_loss, global_step)
                 running_loss = 0.0
 
+            # ---------- save checkpoint ----------
+            if accelerator.is_main_process and global_step % ckpt_step == 0:
+                ckpt_path = f"runs/checkpoints/navdpflow_step_{global_step}.pt"
+                accelerator.save(model.state_dict(), ckpt_path)
+
             # # ---------- sample ----------
             # if accelerator.is_main_process and global_step % sample_step == 0:
             #     model.eval()
@@ -136,7 +146,7 @@ def main():
             #         np.save(f"runs/images/sample_step_{global_step}.npy", trajs)
             #     model.train()
 
-    # ---------- save checkpoint ----------
+    # ---------- final save checkpoint ----------
     if accelerator.is_main_process:
         ckpt_path = f"runs/checkpoints/navdpflow_step_{global_step}.pt"
         accelerator.save(model.state_dict(), ckpt_path)

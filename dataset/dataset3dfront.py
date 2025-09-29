@@ -50,7 +50,24 @@ class NavDP_Base_Datset(Dataset):
                  random_digit=False,
                  prior_sample=False):
         
-        self.dataset_dirs = np.array([p for p in os.listdir(root_dirs)])
+        # 支持单个路径或路径列表
+        if isinstance(root_dirs, str):
+            self.root_dirs_list = [root_dirs]
+        elif isinstance(root_dirs, list):
+            self.root_dirs_list = root_dirs
+        else:
+            raise ValueError("root_dirs must be a string or list of strings")
+        
+        # 收集所有数据集目录
+        all_dataset_dirs = []
+        for root_dir in self.root_dirs_list:
+            if not os.path.exists(root_dir):
+                print(f"Warning: Directory {root_dir} does not exist, skipping...")
+                continue
+            dataset_dirs = [p for p in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, p))]
+            all_dataset_dirs.extend(dataset_dirs)
+        
+        self.dataset_dirs = np.array(all_dataset_dirs)
         self.memory_size = memory_size
         self.image_size = image_size
         self.scene_scale_size = scene_data_scale
@@ -71,46 +88,57 @@ class NavDP_Base_Datset(Dataset):
         
         if preload == False:
             scene_cnt = 0
-            for group_dir in self.dataset_dirs: # gibson_zed, 3dfront ...
-                group_path = os.path.join(root_dirs, group_dir)
-                if not os.path.isdir(group_path):
+            for root_dir in self.root_dirs_list:
+                if not os.path.exists(root_dir):
                     continue
-
-                all_scene_dirs = np.array([p for p in os.listdir(group_path) if os.path.isdir(os.path.join(group_path, p))])
-                select_scene_dirs = all_scene_dirs[np.arange(0,all_scene_dirs.shape[0],1/self.scene_scale_size).astype(np.int32)]
-                
-                for scene_id, scene_dir in enumerate(tqdm(select_scene_dirs)):
-                    scene_path = os.path.join(root_dirs,group_dir,scene_dir)
-                    if not os.path.isdir(scene_path):
-                        continue
-
-                    entire_task_dir = os.path.join(root_dirs,group_dir,scene_dir)
-                    rgb_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.rgb/")
-                    depth_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.depth/")
-                    data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet')
-                    afford_path = os.path.join(entire_task_dir,'data/chunk-000/path.ply')
                     
-                    if not os.path.exists(rgb_dir) or not os.path.exists(depth_dir) or not os.path.exists(data_path):
+                for group_dir in os.listdir(root_dir): # gibson_zed, 3dfront ...
+                    group_path = os.path.join(root_dir, group_dir)
+                    if not os.path.isdir(group_path):
                         continue
 
-                    rgbs_length = len(os.listdir(rgb_dir))
-                    depths_length = len(os.listdir(depth_dir))
-                    if depths_length != rgbs_length:
-                        continue
+                    all_scene_dirs = np.array([p for p in os.listdir(group_path) if os.path.isdir(os.path.join(group_path, p))])
+                    select_scene_dirs = all_scene_dirs[np.arange(0,all_scene_dirs.shape[0],1/self.scene_scale_size).astype(np.int32)]
+                    
+                    for scene_id, scene_dir in enumerate(tqdm(select_scene_dirs, desc=f"Processing {group_dir}")):
+                        scene_path = os.path.join(root_dir, group_dir, scene_dir)
+                        if not os.path.isdir(scene_path):
+                            continue
 
-                    rgbs_path = [os.path.join(rgb_dir, f"{i}.jpg") for i in range(rgbs_length)]
-                    depths_path = [os.path.join(depth_dir, f"{i}.png") for i in range(depths_length)]
+                        entire_task_dir = os.path.join(root_dir, group_dir, scene_dir)
+                        rgb_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.rgb/")
+                        depth_dir = os.path.join(entire_task_dir,"videos/chunk-000/observation.images.depth/")
+                        data_path = os.path.join(entire_task_dir,'data/chunk-000/episode_000000.parquet')
+                        afford_path = os.path.join(entire_task_dir,'data/chunk-000/path.ply')
+                        
+                        if not os.path.exists(rgb_dir) or not os.path.exists(depth_dir) or not os.path.exists(data_path):
+                            continue
 
-                    self.trajectory_dirs.append(entire_task_dir)
-                    self.trajectory_data_dir.append(data_path)
-                    self.trajectory_rgb_path.append(rgbs_path)
-                    self.trajectory_depth_path.append(depths_path)
-                    self.trajectory_afford_path.append(afford_path)
+                        rgbs_length = len(os.listdir(rgb_dir))
+                        depths_length = len(os.listdir(depth_dir))
+                        if depths_length != rgbs_length:
+                            continue
 
-                scene_cnt += 1
-                # debug 模式下，限制总共加载的场景数
+                        rgbs_path = [os.path.join(rgb_dir, f"{i}.jpg") for i in range(rgbs_length)]
+                        depths_path = [os.path.join(depth_dir, f"{i}.png") for i in range(depths_length)]
+
+                        self.trajectory_dirs.append(entire_task_dir)
+                        self.trajectory_data_dir.append(data_path)
+                        self.trajectory_rgb_path.append(rgbs_path)
+                        self.trajectory_depth_path.append(depths_path)
+                        self.trajectory_afford_path.append(afford_path)
+
+                    scene_cnt += 1
+                    # debug 模式下，限制总共加载的场景数
+                    if self.debug and scene_cnt >= debug_max_scenes:
+                        break
+                
+                # 如果debug模式且已达到最大场景数，跳出外层循环
                 if self.debug and scene_cnt >= debug_max_scenes:
                     break
+
+            print(f"Loaded {scene_cnt} scenes")
+            print(f"Loaded {len(self.trajectory_dirs)} trajectories")
                         
             if preload_path and isinstance(preload_path, str):
                 save_dict = {'trajectory_dirs':self.trajectory_dirs,
@@ -416,7 +444,7 @@ class NavDP_Base_Datset(Dataset):
         self.batch_time_sum += (end_time - start_time)
         if self.item_cnt % self.batch_size == 0:
             avg_time = self.batch_time_sum / self.batch_size
-            print(f'__getitem__ pid={os.getpid()}, avg_time(last {self.batch_size})={avg_time:.2f}s, cnt={self.item_cnt}')
+            # print(f'__getitem__ pid={os.getpid()}, avg_time(last {self.batch_size})={avg_time:.2f}s, cnt={self.item_cnt}')
             self.batch_time_sum = 0.0
         point_goal = torch.tensor(point_goal, dtype=torch.float32)
         image_goal = torch.tensor(image_goal, dtype=torch.float32)
