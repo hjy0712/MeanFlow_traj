@@ -17,6 +17,10 @@ from PIL import Image
 from io import BytesIO
 import pdb
 
+import os
+import cv2
+import numpy as np
+
 # Override the built-in print function with a timestamp version
 import builtins
 original_print = builtins.print
@@ -40,8 +44,8 @@ class NavDP_Base_Datset(Dataset):
                  image_size=224,
                  scene_data_scale=1.0,
                  trajectory_data_scale=1.0,
-                 debug=False,              # 👈 调试开关
-                 debug_max_scenes=2,       # 👈 最多加载多少个场景
+                 debug=False,              # 调试开关
+                 debug_max_scenes=1,       # 最多加载多少个场景
                  preload=False,
                  random_digit=False,
                  prior_sample=False):
@@ -104,7 +108,7 @@ class NavDP_Base_Datset(Dataset):
                     self.trajectory_afford_path.append(afford_path)
 
                 scene_cnt += 1
-                # 👇 debug 模式下，限制总共加载的场景数
+                # debug 模式下，限制总共加载的场景数
                 if self.debug and scene_cnt >= debug_max_scenes:
                     break
                         
@@ -152,7 +156,7 @@ class NavDP_Base_Datset(Dataset):
         image = cv2.resize(pad_image,(self.image_size,self.image_size))
         image = np.array(image,np.float32)/255.0
         return image
-    
+
     def process_depth(self,depth_path):
         depth = (self.load_depth(depth_path)/10000.0)
         H,W = depth.shape

@@ -2,6 +2,7 @@ import os
 import time
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from accelerate import Accelerator
 
@@ -20,7 +21,7 @@ def main():
     n_steps = 200000
     batch_size = 16
     log_step = 200
-    sample_step = 2000
+    sample_step = 100
     lr = 1e-4
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -28,6 +29,10 @@ def main():
     os.makedirs("runs/checkpoints", exist_ok=True)
 
     accelerator = Accelerator(mixed_precision="fp16")
+
+    # ---------- TensorBoard init ----------
+    if accelerator.is_main_process:
+        writer = SummaryWriter(log_dir="runs/tensorboard_logs")
 
     # ---------- dataset ----------
     dataset = NavDP_Base_Datset(
@@ -44,7 +49,7 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=8,
+        num_workers=0,
         collate_fn=navdp_collate_fn,
     )
     dataloader = cycle(dataloader)
@@ -92,6 +97,7 @@ def main():
             loss = model.compute_flow_matching_loss(
                 a_start=a_start,
                 a_target=traj_target,
+                goal=goal_point,
                 goal_embed=pointgoal_embed,
                 rgbd_embed=rgbd_embed,
             )
@@ -111,26 +117,30 @@ def main():
                 print(log_msg)
                 with open("runs/train_log.txt", "a") as f:
                     f.write(log_msg + "\n")
+
+                # TensorBoard log
+                writer.add_scalar("Loss/train", avg_loss, global_step)
                 running_loss = 0.0
 
-            # ---------- sample ----------
-            if accelerator.is_main_process and global_step % sample_step == 0:
-                model.eval()
-                with torch.no_grad():
-                    trajs, critics, pos_traj, neg_traj = model.predict_pointgoal_action(
-                        goal_point=goal_point[:2],
-                        input_images=input_images[:2],
-                        input_depths=input_depths[:2],
-                        sample_num=8,
-                    )
-                    import numpy as np
-                    np.save(f"runs/images/sample_step_{global_step}.npy", trajs)
-                model.train()
+            # # ---------- sample ----------
+            # if accelerator.is_main_process and global_step % sample_step == 0:
+            #     model.eval()
+            #     with torch.no_grad():
+            #         trajs, critics, pos_traj, neg_traj = model.predict_pointgoal_action(
+            #             goal_point=goal_point[:2],
+            #             input_images=input_images[:2],
+            #             input_depths=input_depths[:2],
+            #             sample_num=8,
+            #         )
+            #         import numpy as np
+            #         np.save(f"runs/images/sample_step_{global_step}.npy", trajs)
+            #     model.train()
 
     # ---------- save checkpoint ----------
     if accelerator.is_main_process:
         ckpt_path = f"runs/checkpoints/navdpflow_step_{global_step}.pt"
         accelerator.save(model.state_dict(), ckpt_path)
+        writer.close()
 
 
 if __name__ == "__main__":

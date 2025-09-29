@@ -310,17 +310,31 @@ class NavDP_Policy_Flow(nn.Module):
             return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
 
     # ---------- 训练时用的基础 flow-matching loss 实现（可替换/扩展） ----------
-    def compute_flow_matching_loss(self, a_start, a_target, goal_embed, rgbd_embed, mix_goals=None):
-        """
-        a_start: (B, T, 3) - 起始动作（通常是零或上一次动作）
-        a_target: (B, T, 3) - 目标动作，其中后面部分可能为0
-        goal_embed, rgbd_embed: 对应条件
-        """
-        import ipdb; ipdb.set_trace()
+    def compute_flow_matching_loss(self, a_start, a_target, goal, goal_embed, rgbd_embed, mix_goals=None):
+        goal_test = goal
         B, T, _ = a_start.shape
         t = torch.rand(B, device=self.device)  # in (0,1)
         t_ = t.view(B,1,1)
 
+        a_target_interp = self.process_target_trajectory(a_target, a_start)
+        
+        x_t = (1.0 - t_) * a_start + t_ * a_target_interp  # (B,T,3)
+
+        if mix_goals is None:
+            v_pred = self.predict_velocity(x_t, t, goal_embed, rgbd_embed)  # (B,T,3)
+        else:
+            v_pred = self.predict_mix_velocity(x_t, t, mix_goals, rgbd_embed)
+
+        # target velocity
+        v_target = a_target_interp - a_start
+
+        # mean squared error
+        loss = F.mse_loss(v_pred, v_target)
+        return loss
+
+    def process_target_trajectory(self, a_target, a_start):
+        B, T, point_dim = a_target.shape
+        B_start, T_start, _ = a_start.shape
         # =============================
         # 1. 提取有效部分 (非零动作)
         # =============================
@@ -334,43 +348,34 @@ class NavDP_Policy_Flow(nn.Module):
             a_target_valid.append(a_target_b)
         
         # =============================
-        # 2. 插值/拓展到 T 长度
+        # 2. 插值/拓展到 T_start 长度
         # =============================
         a_target_interp = torch.zeros_like(a_target)  # (B, T, 3)
         for b in range(B):
             valid_len = a_target_valid[b].shape[0]
-            if valid_len == 1:
+            if valid_len == 0:
+                # 原地停止时，直接填充整个序列
+                a_target_interp[b] = a_target[b]
+            elif valid_len == 1:
                 # 只有一个有效点，直接填充整个序列
                 a_target_interp[b] = a_target_valid[b].expand(T, 3)
-            elif valid_len == 2:
+            elif valid_len == 2 or valid_len == 3:
                 # 只有两个点时，三次样条不可用 → 退化为线性插值
                 t_orig = torch.linspace(0, 1, steps=valid_len, device=self.device).cpu().numpy()
                 t_new = torch.linspace(0, 1, steps=T, device=self.device).cpu().numpy()
-                for j in range(3):
-                    a_target_interp[b, :, j] = torch.from_numpy(
-                        np.interp(t_new, t_orig, a_target_valid[b, :, j].cpu().numpy())
+                for j in range(point_dim):
+                    a_target_interp[b, :, j] = torch.tensor(
+                        np.interp(t_new, t_orig, a_target_valid[b][:, j].cpu().numpy())
                     ).to(self.device)
-            else:
+            elif valid_len < T_start and valid_len > 0:
                 # 使用三次样条插值
                 t_orig = torch.linspace(0, 1, steps=valid_len, device=self.device).cpu().numpy()
-                t_new = torch.linspace(0, 1, steps=T, device=self.device).cpu().numpy()
-                for j in range(3):
-                    f = interp1d(t_orig, a_target_valid[b, :, j].cpu().numpy(), kind='cubic')
-                    a_target_interp[b, :, j] = torch.from_numpy(f(t_new)).to(self.device)
+                t_new = torch.linspace(0, 1, steps=T_start, device=self.device).cpu().numpy()
+                for j in range(point_dim):
+                    f = interp1d(t_orig, a_target_valid[b][:, j].cpu().numpy(), kind='cubic')
+                    a_target_interp[b, :, j] = torch.tensor(f(t_new), dtype=torch.float32, device=self.device)
 
-        x_t = (1.0 - t_) * a_start + t_ * a_target_interp  # (B,T,3)
-
-        # =============================
-        # 3. 预测速度
-        # =============================
-        if mix_goals is None:
-            v_pred = self.predict_velocity(x_t, t, goal_embed, rgbd_embed)  # (B,T,3)
-        else:
-            v_pred = self.predict_mix_velocity(x_t, t, mix_goals, rgbd_embed)
-
-        # target velocity
-        v_target = a_target_interp - a_start
-
-        # mean squared error
-        loss = F.mse_loss(v_pred, v_target)
-        return loss
+            else:
+                # 监督轨迹与生产轨迹长度相同，不需要插值
+                a_target_interp[b] = a_target[b]
+        return a_target_interp
