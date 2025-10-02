@@ -171,3 +171,4 @@ navdp_test/navdp-cross-modal.ckpt
 runs
 checkpoints
 wandb
+tests

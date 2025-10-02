@@ -21,13 +21,14 @@ def cycle(iterable):
 def main():
     # ---------- config ----------
     n_steps = 200000
-    batch_size = 16
-    log_step = 100
+    batch_size = 128
+    log_step = 20
     sample_step = 100
     ckpt_step = 500
     lr = 1e-4
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
     os.makedirs("runs/images", exist_ok=True)
     os.makedirs("runs/checkpoints", exist_ok=True)
 
@@ -42,6 +43,7 @@ def main():
         "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",  # 第一个基础路径
         "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"  # 第二个基础路径（请替换为实际路径）
     ]
+    # base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_zed"
     dataset = NavDP_Base_Datset(
         root_dirs=base_paths,
         memory_size=8,
@@ -181,30 +183,42 @@ def test_in_train(sample_batch_size, dataloader, device, model, global_step):
     # 绘制数据集监督轨迹（红色）
     for i in range(sample_batch_size):
         target_traj = sample_traj_target[i].cpu().numpy()
+        # 计算累积位置（从起点开始）
+        cumulative_pos = np.cumsum(target_traj/4.0, axis=0)
         # 添加起点 (0, 0)
-        full_traj = np.vstack([[0, 0, 0], target_traj])
+        full_traj = np.vstack([[0, 0, 0], cumulative_pos])
         
-        # 绘制轨迹
+        # 绘制轨迹线
         ax.plot(full_traj[:, 0], full_traj[:, 1], 'r-', linewidth=2, alpha=0.7, label='Ground Truth' if i == 0 else "")
+        # 用圆圈标记每个轨迹点
+        ax.scatter(full_traj[:, 0], full_traj[:, 1], color='red', s=50, marker='o', alpha=0.8, label='GT Points' if i == 0 else "")
         # 标记起点和终点
         ax.scatter(full_traj[0, 0], full_traj[0, 1], color='green', s=100, marker='o', label='Start' if i == 0 else "")
         ax.scatter(full_traj[-1, 0], full_traj[-1, 1], color='red', s=100, marker='s', label='GT End' if i == 0 else "")
     
-    # 绘制模型推理轨迹（黑色）
+    # 绘制模型推理轨迹（黑色）- 绘制所有轨迹
     for i in range(sample_batch_size):
-        # 选择critic值最高的轨迹
-        best_idx = np.argmax(critics[i])
-        pred_traj = trajs[i, best_idx]
-        
-        # 计算累积位置
-        cumulative_pos = np.cumsum(pred_traj, axis=0)
-        # 添加起点 (0, 0)
-        full_traj = np.vstack([[0, 0, 0], cumulative_pos])
-        
-        # 绘制轨迹
-        ax.plot(full_traj[:, 0], full_traj[:, 1], 'k-', linewidth=2, alpha=0.7, label='Predicted' if i == 0 else "")
-        # 标记终点
-        ax.scatter(full_traj[-1, 0], full_traj[-1, 1], color='black', s=100, marker='^', label='Pred End' if i == 0 else "")
+        # 绘制所有生成的轨迹
+        for j in range(trajs.shape[1]):  # trajs.shape[1] 是轨迹数量
+            pred_traj = trajs[i, j]
+            # 添加起点 (0, 0)
+            full_traj = np.vstack([[0, 0, 0], pred_traj])
+            
+            # 绘制轨迹线（使用不同的透明度来区分多条轨迹）
+            alpha = 0.5 if j > 0 else 0.7  # 第一条轨迹更明显
+            ax.plot(full_traj[:, 0], full_traj[:, 1], 'k-', linewidth=1.5, alpha=alpha, 
+                   label='Predicted Trajectories' if i == 0 and j == 0 else "")
+            # 用圆圈标记每个轨迹点
+            ax.scatter(full_traj[:, 0], full_traj[:, 1], color='black', s=30, marker='o', alpha=alpha*0.8, 
+                      label='Pred Points' if i == 0 and j == 0 else "")
+            # 标记终点
+            ax.scatter(full_traj[-1, 0], full_traj[-1, 1], color='black', s=60, marker='^', alpha=alpha, 
+                      label='Pred End' if i == 0 and j == 0 else "")
+    
+    # 绘制期望目标点
+    for i in range(sample_batch_size):
+        goal_point = sample_goal_point[i].cpu().numpy()
+        ax.scatter(goal_point[0], goal_point[1], color='blue', s=150, marker='*', label='Target Goal' if i == 0 else "")
     
     # 设置图像属性
     ax.set_xlabel('X Position')

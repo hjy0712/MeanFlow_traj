@@ -128,7 +128,7 @@ class NavDP_Policy_Flow(nn.Module):
         cond_goal_embed: goal embedding aligned for predict_velocity (shape (B, M, token_dim))
         rgbd_embed: (B, N, token_dim)
         mix_goals: optional list for predict_mix_velocity
-        返回: x at t=0 (样本轨迹)
+        返回: x at t=0 (动作序列)
         """
         B = x_init.shape[0]
         x = x_init.clone()
@@ -137,7 +137,7 @@ class NavDP_Policy_Flow(nn.Module):
         # integrate (simple explicit Euler). 可替换为 RK4 提升精度
         for i in range(len(ts)-1):
             t = ts[i]
-            dt = ts[i+1] - ts[i]  # negative
+            dt = ts[i] - ts[i+1]
             if mix_goals is None:
                 v = self.predict_velocity(x, torch.full((B,), t, device=self.device), cond_goal_embed, rgbd_embed)
             else:
@@ -164,10 +164,12 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_point.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 4.0, dim=1)
+            all_trajectory = all_trajectory /10.0
             all_trajectory = all_trajectory.reshape(goal_point.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
-            all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
+            # 轨迹长度小于0.1则不学习
+            all_trajectory[trajectory_length < 0.1] = all_trajectory[trajectory_length < 0.1] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
             
             sorted_indices = (-critic_values).argsort(dim=1)
             topk_indices = sorted_indices[:,0:2]
@@ -195,7 +197,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -226,7 +228,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -256,7 +258,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(input_images.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
             all_trajectory = all_trajectory.reshape(input_images.shape[0], sample_num, self.predict_size, 3)
 
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
@@ -292,7 +294,7 @@ class NavDP_Policy_Flow(nn.Module):
             critic_values = self.predict_critic(naction, rgbd_embed)
             critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
             
-            all_trajectory = torch.cumsum(naction / 10.0, dim=1)
+            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
             all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
             trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
             all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
@@ -311,15 +313,16 @@ class NavDP_Policy_Flow(nn.Module):
 
     # ---------- 训练时用的基础 flow-matching loss 实现（可替换/扩展） ----------
     def compute_flow_matching_loss(self, a_start, a_target, goal, goal_embed, rgbd_embed, mix_goals=None):
-        goal_test = goal
         B, T, _ = a_start.shape
         t = torch.rand(B, device=self.device)  # in (0,1)
         t_ = t.view(B,1,1)
 
         a_target_interp = self.process_target_trajectory(a_target, a_start)
         
-        x_t = (1.0 - t_) * a_start + t_ * a_target_interp  # (B,T,3)
+        # t=0是干净数据，t=1是纯高斯噪声数据
+        x_t = (1.0 - t_) * a_target_interp + t_ * a_start # (B,T,3)
 
+        # predict velocity
         if mix_goals is None:
             v_pred = self.predict_velocity(x_t, t, goal_embed, rgbd_embed)  # (B,T,3)
         else:
@@ -329,7 +332,7 @@ class NavDP_Policy_Flow(nn.Module):
         v_target = a_target_interp - a_start
 
         # mean squared error
-        loss = F.mse_loss(v_pred * 10.0, v_target)
+        loss = F.mse_loss(v_pred, v_target * 10.0)
         return loss
 
     def process_target_trajectory(self, a_target, a_start):
@@ -339,7 +342,6 @@ class NavDP_Policy_Flow(nn.Module):
         # 1. 提取有效部分 (非零动作)
         # =============================
         mask_valid = (a_target.abs().sum(dim=-1) != 0)  # (B, T), True 表示有效
-        max_valid_len = mask_valid.sum(dim=1).max().item()  # 每个 batch 有效长度
 
         a_target_valid = []
         for b in range(B):
@@ -348,7 +350,7 @@ class NavDP_Policy_Flow(nn.Module):
             a_target_valid.append(a_target_b)
         
         # =============================
-        # 2. 插值/拓展到 T_start 长度
+        # 2. 将动作序列转换为轨迹点坐标
         # =============================
         a_target_interp = torch.zeros_like(a_target)  # (B, T, 3)
         for b in range(B):
@@ -357,25 +359,41 @@ class NavDP_Policy_Flow(nn.Module):
                 # 原地停止时，直接填充整个序列
                 a_target_interp[b] = a_target[b]
             elif valid_len == 1:
-                # 只有一个有效点，直接填充整个序列
-                a_target_interp[b] = a_target_valid[b].expand(T, 3)
-            elif valid_len == 2 or valid_len == 3:
-                # 只有两个点时，三次样条不可用 → 退化为线性插值
-                t_orig = torch.linspace(0, 1, steps=valid_len, device=self.device).cpu().numpy()
-                t_new = torch.linspace(0, 1, steps=T, device=self.device).cpu().numpy()
-                for j in range(point_dim):
-                    a_target_interp[b, :, j] = torch.tensor(
-                        np.interp(t_new, t_orig, a_target_valid[b][:, j].cpu().numpy())
-                    ).to(self.device)
-            elif valid_len < T_start and valid_len > 0:
-                # 使用三次样条插值
-                t_orig = torch.linspace(0, 1, steps=valid_len, device=self.device).cpu().numpy()
-                t_new = torch.linspace(0, 1, steps=T_start, device=self.device).cpu().numpy()
-                for j in range(point_dim):
-                    f = interp1d(t_orig, a_target_valid[b][:, j].cpu().numpy(), kind='cubic')
-                    a_target_interp[b, :, j] = torch.tensor(f(t_new), dtype=torch.float32, device=self.device)
-
+                # 只有一个有效动作时，除以动作步再填充整个序列
+                a_target_interp[b] = (a_target_valid[b] / T).expand(T, 3)
             else:
-                # 监督轨迹与生产轨迹长度相同，不需要插值
-                a_target_interp[b] = a_target[b]
+                # 将动作序列转换为轨迹点坐标（累积和）
+                traj_points = torch.cumsum(a_target_valid[b], dim=0)  # (L_b, 3)
+                
+                # 添加起点 (0, 0, 0)
+                traj_points_with_start = torch.cat([
+                    torch.zeros(1, 3, device=self.device), 
+                    traj_points
+                ], dim=0)  # (L_b+1, 3)
+                
+                # =============================
+                # 3. 在轨迹点坐标层面进行插值
+                # =============================
+                if valid_len == 2:
+                    # 只有两个点时，使用线性插值
+                    t_orig = torch.linspace(0, 1, steps=valid_len+1, device=self.device).cpu().numpy()
+                    t_new = torch.linspace(0, 1, steps=T_start+1, device=self.device).cpu().numpy()
+                    traj_interp = torch.zeros(T_start+1, 3, device=self.device)
+                    for j in range(point_dim):
+                        traj_interp[:, j] = torch.tensor(
+                            np.interp(t_new, t_orig, traj_points_with_start[:, j].cpu().numpy())
+                        ).to(self.device)
+                else:
+                    # 使用三次样条插值
+                    t_orig = torch.linspace(0, 1, steps=valid_len+1, device=self.device).cpu().numpy()
+                    t_new = torch.linspace(0, 1, steps=T_start+1, device=self.device).cpu().numpy()
+                    traj_interp = torch.zeros(T_start+1, 3, device=self.device)
+                    for j in range(point_dim):
+                        f = interp1d(t_orig, traj_points_with_start[:, j].cpu().numpy(), kind='cubic')
+                        traj_interp[:, j] = torch.tensor(f(t_new), dtype=torch.float32, device=self.device)
+                
+                # =============================
+                # 4. 插值后的轨迹点直接作为动作序列
+                # =============================
+                a_target_interp[b] = traj_interp[1:] - traj_interp[:-1]  # (T_start, 3)
         return a_target_interp
