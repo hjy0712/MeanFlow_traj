@@ -21,18 +21,19 @@ def cycle(iterable):
 def main():
     # ---------- config ----------
     n_steps = 200000
-    batch_size = 128
+    batch_size = 64
     log_step = 20
     sample_step = 100
     ckpt_step = 500
     lr = 1e-4
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    accelerator = Accelerator(mixed_precision="fp16")
+    device = accelerator.device
+    if accelerator.is_main_process:
+        print(f"Using device: {device}, world size={accelerator.num_processes}")
+
     os.makedirs("runs/images", exist_ok=True)
     os.makedirs("runs/checkpoints", exist_ok=True)
-
-    accelerator = Accelerator(mixed_precision="fp16")
 
     # ---------- TensorBoard init ----------
     if accelerator.is_main_process:
@@ -40,8 +41,8 @@ def main():
 
     # ---------- dataset ----------
     base_paths = [
-        "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",  # 第一个基础路径
-        "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"  # 第二个基础路径（请替换为实际路径）
+        "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
+        "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
     ]
     # base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_zed"
     dataset = NavDP_Base_Datset(
@@ -58,7 +59,7 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=0,
+        num_workers=4,
         collate_fn=navdp_collate_fn,
     )
     dataloader = cycle(dataloader)
@@ -73,16 +74,19 @@ def main():
         token_dim=384,
         device=device,
         solver_steps=50,
-    ).to(device)
+    )
+    net = unwrap_model(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+
+    # prepare for DDP
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     global_step = 0
     running_loss = 0.0
 
     # ---------- training loop ----------
-    with tqdm(range(n_steps), dynamic_ncols=True) as pbar:
+    with tqdm(range(n_steps), disable=not accelerator.is_main_process, dynamic_ncols=True) as pbar:
         pbar.set_description("Training")
         model.train()
 
@@ -90,20 +94,20 @@ def main():
             batch = next(dataloader)
 
             # ---- inputs from dataset ----
-            traj_target = batch["batch_labels"].to(device)   # (B,T,3)
-            input_images = batch["batch_rgb"].to(device)     # (B,mem,H,W,3)
-            input_depths = batch["batch_depth"].to(device)   # (B,mem,H,W,1)
-            goal_point = batch["batch_pg"].to(device)        # (B,3)
+            traj_target = batch["batch_labels"].to(device)
+            input_images = batch["batch_rgb"].to(device)
+            input_depths = batch["batch_depth"].to(device)
+            goal_point = batch["batch_pg"].to(device)
 
             # ---- embeddings ----
-            rgbd_embed = model.rgbd_encoder(input_images, input_depths)
-            pointgoal_embed = model.point_encoder(goal_point).unsqueeze(1)
+            rgbd_embed = net.rgbd_encoder(input_images, input_depths)
+            pointgoal_embed = net.point_encoder(goal_point).unsqueeze(1)
 
             # ---- a_start: 全零轨迹 ----
             a_start = torch.zeros_like(traj_target)
 
             # ---- flow matching loss ----
-            loss = model.compute_flow_matching_loss(
+            loss = net.compute_flow_matching_loss(
                 a_start=a_start,
                 a_target=traj_target,
                 goal=goal_point,
@@ -127,7 +131,6 @@ def main():
                 with open("runs/train_log.txt", "a") as f:
                     f.write(log_msg + "\n")
 
-                # TensorBoard log
                 writer.add_scalar("Loss/train", avg_loss, global_step)
                 running_loss = 0.0
 
@@ -140,12 +143,8 @@ def main():
             if accelerator.is_main_process and global_step % sample_step == 0:
                 model.eval()
                 with torch.no_grad():
-                    # 随机选取一个场景进行采样
-                    sample_batch_size = 1
-                    sample_pic = test_in_train(sample_batch_size, dataloader, device, model, global_step)
-                    # 保存采样图片
+                    sample_pic = test_in_train(1, dataloader, device, model, global_step)
                     if sample_pic is not None:
-                        os.makedirs("runs/images", exist_ok=True)
                         img_save_path = f"runs/images/step_{global_step}.png"
                         sample_pic.savefig(img_save_path, dpi=150, bbox_inches='tight')
                         print(f"Sample image saved at step {global_step} to {img_save_path}")
@@ -158,7 +157,11 @@ def main():
         accelerator.save(model.state_dict(), ckpt_path)
         writer.close()
 
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
 def test_in_train(sample_batch_size, dataloader, device, model, global_step):
+    net = unwrap_model(model)
     
     # 随机获取一个批次的数据
     sample_batch = next(dataloader)
@@ -170,7 +173,7 @@ def test_in_train(sample_batch_size, dataloader, device, model, global_step):
     sample_goal_point = sample_batch["batch_pg"].to(device)[:sample_batch_size]
     
     # 模型推理轨迹
-    trajs, critics, pos_traj, neg_traj = model.predict_pointgoal_action(
+    trajs, critics, pos_traj, neg_traj = net.predict_pointgoal_action(
         goal_point=sample_goal_point,
         input_images=sample_input_images,
         input_depths=sample_input_depths,
