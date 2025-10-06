@@ -40,11 +40,11 @@ def main():
         writer = SummaryWriter(log_dir="runs/tensorboard_logs")
 
     # ---------- dataset ----------
-    base_paths = [
-        "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
-        "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
-    ]
-    # base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_zed"
+    # base_paths = [
+    #     "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
+    #     "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
+    # ]
+    base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
     dataset = NavDP_Base_Datset(
         root_dirs=base_paths,
         memory_size=8,
@@ -103,8 +103,8 @@ def main():
             rgbd_embed = net.rgbd_encoder(input_images, input_depths)
             pointgoal_embed = net.point_encoder(goal_point).unsqueeze(1)
 
-            # ---- a_start: 全零轨迹 ----
-            a_start = torch.zeros_like(traj_target)
+            # ---- a_start: 高斯轨迹 ----
+            a_start = torch.randn_like(traj_target)
 
             # ---- flow matching loss ----
             loss = net.compute_flow_matching_loss(

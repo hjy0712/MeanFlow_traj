@@ -84,7 +84,7 @@ def save_traj_txt(gt_traj, pred_trajs, goal_point, save_dir, step):
 
 def main():
     # ---------- config ----------
-    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs/checkpoints/navdpflow_step_3000.pt"  # 修改成你保存的checkpoint路径
+    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs/checkpoints/navdpflow_step_91000.pt"
     save_root = "tests/results"
     os.makedirs(save_root, exist_ok=True)
 
@@ -130,7 +130,11 @@ def main():
     # 加载 checkpoint
     print(f"Loading checkpoint from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt)   # 直接加载整个字典
+    # # 如果是单卡训练的，直接加载
+    # model.load_state_dict(ckpt)
+    # 如果是多卡保存的，加这段
+    new_ckpt = {k.replace("module.", ""): v for k, v in ckpt.items()}
+    model.load_state_dict(new_ckpt, strict=False)
 
     model.eval()
 
