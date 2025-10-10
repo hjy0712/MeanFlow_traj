@@ -169,6 +169,7 @@ output_test
 depth_anything
 navdp_test/navdp-cross-modal.ckpt
 runs
+runs_fm
 checkpoints
 wandb
 tests

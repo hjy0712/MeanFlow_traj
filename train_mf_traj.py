@@ -8,7 +8,7 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 import numpy as np
 
-from models_traj.policy_network import NavDP_Policy_Flow
+from models_traj.policy_network_meanflow import NavDP_Policy_MeanFlow
 from dataset.dataset3dfront import NavDP_Base_Datset, navdp_collate_fn
 
 
@@ -24,7 +24,7 @@ def main():
     batch_size = 64
     log_step = 20
     sample_step = 100
-    ckpt_step = 500
+    ckpt_step = 2000
     lr = 1e-4
 
     accelerator = Accelerator(mixed_precision="fp16")
@@ -44,7 +44,7 @@ def main():
     #     "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
     #     "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
     # ]
-    base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
+    base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_zed"
     dataset = NavDP_Base_Datset(
         root_dirs=base_paths,
         memory_size=8,
@@ -65,7 +65,7 @@ def main():
     dataloader = cycle(dataloader)
 
     # ---------- model ----------
-    model = NavDP_Policy_Flow(
+    model = NavDP_Policy_MeanFlow(
         image_size=224,
         memory_size=8,
         predict_size=24,
@@ -106,13 +106,21 @@ def main():
             # ---- a_start: 高斯轨迹 ----
             a_start = torch.randn_like(traj_target)
 
-            # ---- flow matching loss ----
-            loss = net.compute_flow_matching_loss(
-                a_start=a_start,
-                a_target=traj_target,
-                goal=goal_point,
-                goal_embed=pointgoal_embed,
-                rgbd_embed=rgbd_embed,
+            # # ---- flow matching loss ----
+            # loss = net.compute_flow_matching_loss(
+            #     a_start=a_start,
+            #     a_target=traj_target,
+            #     goal=goal_point,
+            #     goal_embed=pointgoal_embed,
+            #     rgbd_embed=rgbd_embed,
+            # )
+
+            # ---- meanflow loss ----
+            loss, mse_val = net.compute_meanflow_loss(
+                model_fn=net.predict_velocity,   # 主体模型函数
+                x=traj_target,                   # 输入轨迹（ground truth）
+                goal_embed=pointgoal_embed,      # 目标点 embedding
+                rgbd_embed=rgbd_embed            # 感知 embedding
             )
 
             accelerator.backward(loss)

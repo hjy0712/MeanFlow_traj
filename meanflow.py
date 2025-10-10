@@ -157,11 +157,11 @@ class MeanFlow:
 
         # forward pass
         # u = model(z, t, r, y=c)
-        model_partial = partial(model, y=c)
+        model_partial = partial(model, y=c) # 固定函数的部分参数，生成一个新的函数对象
         jvp_args = (
-            lambda z, t, r: model_partial(z, t, r),
-            (z, t, r),
-            (v_hat, torch.ones_like(t), torch.zeros_like(r)),
+            lambda z, t, r: model_partial(z, t, r), # 定义一个临时函数，内部调用model_partial函数
+            (z, t, r), # 要对哪个输入点计算 JVP
+            (v_hat, torch.ones_like(t), torch.zeros_like(r)), # 表示要沿着哪个“方向”求导
         )
 
         if self.create_graph:

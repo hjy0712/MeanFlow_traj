@@ -84,8 +84,8 @@ def save_traj_txt(gt_traj, pred_trajs, goal_point, save_dir, step):
 
 def main():
     # ---------- config ----------
-    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs/checkpoints/navdpflow_step_91000.pt"
-    save_root = "tests/results"
+    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs_fm/checkpoints/navdpflow_step_149000.pt"
+    save_root = "tests/results_3"
     os.makedirs(save_root, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -124,7 +124,7 @@ def main():
         heads=8,
         token_dim=384,
         device=device,
-        solver_steps=50,
+        solver_steps=3,
     ).to(device)
 
     # 加载 checkpoint
