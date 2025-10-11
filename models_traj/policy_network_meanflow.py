@@ -12,7 +12,7 @@ def stopgrad(x):
     return x.detach()
 
 def adaptive_l2_loss(error, gamma=0.5, c=1e-3):
-    delta_sq = torch.mean(error ** 2, dim=(1, 2, 3), keepdim=False)
+    delta_sq = torch.mean(error ** 2, dim=(1, 2), keepdim=False)
     p = 1.0 - gamma
     w = 1.0 / (delta_sq + c).pow(p)
     loss = delta_sq
@@ -83,7 +83,7 @@ class NavDP_Policy_MeanFlow(nn.Module):
         self.cond_critic_mask[:, 0:4] = float('-inf')
 
 
-    # ---------- 与原版相同 ----------
+    # ---------- MeanFlow预测速度 ----------
     def predict_velocity(self, actions, t, r, goal_embed, rgbd_embed):
         """
         MeanFlow 版本：考虑时间区间 (r, t)
@@ -153,18 +153,18 @@ class NavDP_Policy_MeanFlow(nn.Module):
         return t, r
 
 
-    def compute_meanflow_loss(self, model_fn, x, goal_embed, rgbd_embed):
-        B = x.shape[0]
-        device = x.device
+    def compute_meanflow_loss(self, model_fn, a_start, a_target, goal_embed, rgbd_embed):
+        B, T, _ = a_start.shape
+        device = a_start.device
+
+        a_target_interp = self.process_target_trajectory(a_target, a_start) # (B,T,3)
+
         t, r = self.sample_t_r(B, device)
-        
-        # 修正：轨迹数据是3维的，需要调整t_和r_的形状
         t_ = t.view(B, 1, 1)  # 从 (B,1,1,1) 改为 (B,1,1)
         r_ = r.view(B, 1, 1)  # 从 (B,1,1,1) 改为 (B,1,1)
 
-        e = torch.randn_like(x)
-        v = e - x
-        z = (1 - t_) * x + t_ * e
+        v = a_start - a_target_interp
+        z = (1 - t_) * a_target_interp + t_ * a_start   # t=0 -> clean, t=1 -> noise
 
         model_partial = partial(model_fn)
         jvp_args = (
@@ -184,21 +184,16 @@ class NavDP_Policy_MeanFlow(nn.Module):
         mse = (stopgrad(error) ** 2).mean()
         return loss, mse
 
-
-    # ---------- 采样部分（与 Flow 相同） ----------
-    def integrate_velocity_field(self, x_init, cond_goal_embed, rgbd_embed, mix_goals=None):
-        B = x_init.shape[0]
-        x = x_init.clone()
-        ts = torch.linspace(1.0, 0.0, steps=self.solver_steps, device=self.device)
-        for i in range(len(ts)-1):
-            t = ts[i]
-            dt = ts[i] - ts[i+1]
-            if mix_goals is None:
-                v = self.predict_velocity(x, torch.full((B,), t, device=self.device), cond_goal_embed, rgbd_embed)
-            else:
-                v = self.predict_mix_velocity(x, torch.full((B,), t, device=self.device), mix_goals, rgbd_embed)
-            x = x + v * dt
-        return x
+    # ---------- critic 保持几乎不变 ----------
+    def predict_critic(self, predict_trajectory, rgbd_embed):
+        nogoal_embed = torch.zeros_like(rgbd_embed[:,0:1])
+        action_embeddings = self.input_embed(predict_trajectory)
+        action_embeddings = action_embeddings + self.out_pos_embed(action_embeddings)
+        cond_embeddings = torch.cat([nogoal_embed,nogoal_embed,nogoal_embed,nogoal_embed,rgbd_embed],dim=1) +  self.cond_pos_embed(torch.cat([nogoal_embed,nogoal_embed,nogoal_embed,nogoal_embed,rgbd_embed],dim=1))
+        critic_output = self.decoder(tgt = action_embeddings, memory = cond_embeddings, memory_mask = self.cond_critic_mask.to(self.device))
+        critic_output = self.layernorm(critic_output)
+        critic_output = self.critic_head(critic_output.mean(dim=1))[:,0]
+        return critic_output
 
 
     # ---------- 将 predict_*_action 中的 DDPM loop 替换为 flow-matching 积分 ----------
@@ -262,157 +257,29 @@ class NavDP_Policy_MeanFlow(nn.Module):
                 negative_trajectory.cpu().numpy(),
             )
 
-    def predict_imagegoal_action(self, goal_image, input_images, input_depths, sample_num=16):
-        with torch.no_grad():
-            rgbd_embed = self.rgbd_encoder(input_images, input_depths)
-            imagegoal_embed = self.image_encoder(np.concatenate((goal_image, input_images[:,-1]), axis=-1)).unsqueeze(1)
-    
-            rgbd_embed = torch.repeat_interleave(rgbd_embed, sample_num, dim=0)
-            imagegoal_embed = torch.repeat_interleave(imagegoal_embed, sample_num, dim=0)
-            
-            naction = torch.randn((sample_num * goal_image.shape[0], self.predict_size, 3), device=self.device)
-            naction = self.integrate_velocity_field(naction, imagegoal_embed, rgbd_embed)
-            
-            critic_values = self.predict_critic(naction, rgbd_embed)
-            critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
-            
-            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
-            all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
-            trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
-            all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
-            
-            sorted_indices = (-critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            positive_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            sorted_indices = (critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            negative_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
-    
-    def predict_pixelgoal_action(self, goal_image, input_images, input_depths, sample_num=16):
-        with torch.no_grad():
-            rgbd_embed = self.rgbd_encoder(input_images, input_depths)
-            pixelgoal_embed = self.pixel_encoder(np.concatenate((goal_image[:,:,:,None], input_images[:,-1]), axis=-1)).unsqueeze(1)
-    
-            rgbd_embed = torch.repeat_interleave(rgbd_embed, sample_num, dim=0)
-            pixelgoal_embed = torch.repeat_interleave(pixelgoal_embed, sample_num, dim=0)
-            
-            naction = torch.randn((sample_num * goal_image.shape[0], self.predict_size, 3), device=self.device)
-            naction = self.integrate_velocity_field(naction, pixelgoal_embed, rgbd_embed)
-            
-            critic_values = self.predict_critic(naction, rgbd_embed)
-            critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
-            
-            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
-            all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
-            trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
-            all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
-            
-            sorted_indices = (-critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            positive_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            sorted_indices = (critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            negative_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
+    # # ---------- 训练时用的基础 flow-matching loss 实现 ----------
+    # def compute_flow_matching_loss(self, a_start, a_target, goal, goal_embed, rgbd_embed, mix_goals=None):
+    #     B, T, _ = a_start.shape
+    #     t = torch.rand(B, device=self.device)  # in (0,1)
+    #     t_ = t.view(B,1,1)
 
-    def predict_nogoal_action(self, input_images, input_depths, sample_num=16):
-        with torch.no_grad():
-            rgbd_embed = self.rgbd_encoder(input_images, input_depths)
-            nogoal_embed = torch.zeros_like(rgbd_embed[:,0:1])
-            rgbd_embed = torch.repeat_interleave(rgbd_embed, sample_num, dim=0)
-            nogoal_embed = torch.repeat_interleave(nogoal_embed, sample_num, dim=0)
-           
-            naction = torch.randn((sample_num * input_images.shape[0], self.predict_size, 3), device=self.device)
-            naction = self.integrate_velocity_field(naction, nogoal_embed, rgbd_embed)
-            
-            critic_values = self.predict_critic(naction, rgbd_embed)
-            critic_values = critic_values.reshape(input_images.shape[0], sample_num)
-            
-            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
-            all_trajectory = all_trajectory.reshape(input_images.shape[0], sample_num, self.predict_size, 3)
-
-            trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
-            # 我们对非常短的轨迹打低分（同原逻辑）
-            critic_values[torch.where(trajectory_length < 1.0)] -= 10.0
-            
-            sorted_indices = (-critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(input_images.shape[0]).unsqueeze(1).expand(-1, 2)
-            positive_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            sorted_indices = (critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(input_images.shape[0]).unsqueeze(1).expand(-1, 2)
-            negative_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
+    #     a_target_interp = self.process_target_trajectory(a_target, a_start)
         
-    def predict_ip_action(self, goal_point, goal_image, input_images, input_depths, sample_num=16):
-        with torch.no_grad():
-            tensor_point_goal = torch.as_tensor(goal_point, dtype=torch.float32, device=self.device)
-            rgbd_embed = self.rgbd_encoder(input_images, input_depths)
-            imagegoal_embed = self.image_encoder(np.concatenate((goal_image, input_images[:,-1]), axis=-1)).unsqueeze(1)
-            pointgoal_embed = self.point_encoder(tensor_point_goal).unsqueeze(1)
-            
-            rgbd_embed = torch.repeat_interleave(rgbd_embed, sample_num, dim=0)
-            pointgoal_embed = torch.repeat_interleave(pointgoal_embed, sample_num, dim=0)
-            imagegoal_embed = torch.repeat_interleave(imagegoal_embed, sample_num, dim=0)
-            
-            naction = torch.randn((sample_num * goal_image.shape[0], self.predict_size, 3), device=self.device)
-            naction = self.integrate_velocity_field(naction, imagegoal_embed, rgbd_embed, mix_goals=[imagegoal_embed, pointgoal_embed, imagegoal_embed])
-            
-            critic_values = self.predict_critic(naction, rgbd_embed)
-            critic_values = critic_values.reshape(goal_image.shape[0], sample_num)
-            
-            all_trajectory = torch.cumsum(naction / 40.0, dim=1)
-            all_trajectory = all_trajectory.reshape(goal_image.shape[0], sample_num, self.predict_size, 3)
-            trajectory_length = all_trajectory[:,:,-1,0:2].norm(dim=-1)
-            all_trajectory[trajectory_length < 0.5] = all_trajectory[trajectory_length < 0.5] * torch.tensor([[[0,0,1.0]]], device=all_trajectory.device)
-            
-            sorted_indices = (-critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            positive_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            sorted_indices = (critic_values).argsort(dim=1)
-            topk_indices = sorted_indices[:,0:2]
-            batch_indices = torch.arange(goal_image.shape[0]).unsqueeze(1).expand(-1, 2)
-            negative_trajectory = all_trajectory[batch_indices, topk_indices]
-            
-            return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
+    #     # t=0是干净数据，t=1是纯高斯噪声数据
+    #     x_t = (1.0 - t_) * a_target_interp + t_ * a_start # (B,T,3)
 
-    # ---------- 训练时用的基础 flow-matching loss 实现（可替换/扩展） ----------
-    def compute_flow_matching_loss(self, a_start, a_target, goal, goal_embed, rgbd_embed, mix_goals=None):
-        B, T, _ = a_start.shape
-        t = torch.rand(B, device=self.device)  # in (0,1)
-        t_ = t.view(B,1,1)
+    #     # predict velocity
+    #     if mix_goals is None:
+    #         v_pred = self.predict_velocity(x_t, t, goal_embed, rgbd_embed)  # (B,T,3)
+    #     else:
+    #         v_pred = self.predict_mix_velocity(x_t, t, mix_goals, rgbd_embed)
 
-        a_target_interp = self.process_target_trajectory(a_target, a_start)
-        
-        # t=0是干净数据，t=1是纯高斯噪声数据
-        x_t = (1.0 - t_) * a_target_interp + t_ * a_start # (B,T,3)
+    #     # target velocity
+    #     v_target = a_target_interp - a_start
 
-        # predict velocity
-        if mix_goals is None:
-            v_pred = self.predict_velocity(x_t, t, goal_embed, rgbd_embed)  # (B,T,3)
-        else:
-            v_pred = self.predict_mix_velocity(x_t, t, mix_goals, rgbd_embed)
-
-        # target velocity
-        v_target = a_target_interp - a_start
-
-        # mean squared error
-        loss = F.mse_loss(v_pred, v_target)
-        return loss
+    #     # mean squared error
+    #     loss = F.mse_loss(v_pred, v_target)
+    #     return loss
 
     def process_target_trajectory(self, a_target, a_start):
         B, T, point_dim = a_target.shape

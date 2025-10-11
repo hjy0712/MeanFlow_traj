@@ -1,6 +1,9 @@
 import os
 import time
 import torch
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -25,7 +28,7 @@ def main():
     log_step = 20
     sample_step = 100
     ckpt_step = 2000
-    lr = 1e-4
+    lr = 2e-4
 
     accelerator = Accelerator(mixed_precision="fp16")
     device = accelerator.device
@@ -44,7 +47,7 @@ def main():
     #     "/mnt/zrh/data/static_nav_from_n1/3dfront_zed",
     #     "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
     # ]
-    base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_zed"
+    base_paths = "/mnt/zrh/data/static_nav_from_n1/3dfront_d435i"
     dataset = NavDP_Base_Datset(
         root_dirs=base_paths,
         memory_size=8,
@@ -52,6 +55,7 @@ def main():
         image_size=224,
         scene_data_scale=1.0,
         trajectory_data_scale=1.0,
+        debug=False,
         preload=False,
     )
     dataloader = DataLoader(
@@ -78,6 +82,7 @@ def main():
     net = unwrap_model(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=1e-6)
 
     # prepare for DDP
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
@@ -118,13 +123,15 @@ def main():
             # ---- meanflow loss ----
             loss, mse_val = net.compute_meanflow_loss(
                 model_fn=net.predict_velocity,   # 主体模型函数
-                x=traj_target,                   # 输入轨迹（ground truth）
+                a_start=a_start,    # 初始噪声轨迹
+                a_target=traj_target,            # 目标轨迹（ground truth）
                 goal_embed=pointgoal_embed,      # 目标点 embedding
                 rgbd_embed=rgbd_embed            # 感知 embedding
             )
 
             accelerator.backward(loss)
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
 
             global_step += 1
@@ -133,6 +140,7 @@ def main():
             # ---------- log ----------
             if accelerator.is_main_process and global_step % log_step == 0:
                 avg_loss = running_loss / log_step
+                current_lr = scheduler.get_last_lr()[0]
                 current_time = time.asctime(time.localtime(time.time()))
                 log_msg = f"{current_time} | step={global_step} | loss={avg_loss:.6f}"
                 print(log_msg)
@@ -140,6 +148,7 @@ def main():
                     f.write(log_msg + "\n")
 
                 writer.add_scalar("Loss/train", avg_loss, global_step)
+                writer.add_scalar("LR", current_lr, global_step)
                 running_loss = 0.0
 
             # ---------- save checkpoint ----------

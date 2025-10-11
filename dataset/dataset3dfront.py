@@ -44,7 +44,7 @@ class NavDP_Base_Datset(Dataset):
                  image_size=224,
                  scene_data_scale=1.0,
                  trajectory_data_scale=1.0,
-                 debug=True,              # 调试开关
+                 debug=False,              # 调试开关
                  debug_max_scenes=1,       # 最多加载多少个场景
                  preload=False,
                  random_digit=False,

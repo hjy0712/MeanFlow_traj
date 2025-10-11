@@ -125,10 +125,7 @@ def main():
     new_ckpt = "/mnt/houjunyi/MeanFlow_traj/navdp_test/navdp-cross-modal.ckpt"
 
     image_paths = [
-        "/mnt/houjunyi/MeanFlow_traj/tests/home_pic/4.jpg",
-        "/mnt/houjunyi/MeanFlow_traj/tests/home_pic/5.jpg",
-        "/mnt/houjunyi/MeanFlow_traj/tests/home_pic/6.jpg",
-        "/mnt/houjunyi/MeanFlow_traj/tests/home_pic/7.jpg"
+        "/mnt/houjunyi/MeanFlow_traj/tests/home_pic/test.jpeg"
     ]
     save_root = "tests/results_compare"
     os.makedirs(save_root, exist_ok=True)
