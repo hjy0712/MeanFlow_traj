@@ -68,7 +68,7 @@ class MeanFlow:
         num_classes=10,
         normalizer=['minmax', None, None],
         # mean flow settings
-        flow_ratio=0.50,
+        flow_ratio=0.80,
         # time distribution, mu, sigma
         time_dist=['lognorm', -0.4, 1.0],
         cfg_ratio=0.10,

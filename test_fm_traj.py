@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from models_traj.policy_network_meanflow import NavDP_Policy_MeanFlow
+from models_traj.policy_network import NavDP_Policy_Flow
 from dataset.dataset3dfront import NavDP_Base_Datset, navdp_collate_fn
 
 
@@ -84,8 +84,8 @@ def save_traj_txt(gt_traj, pred_trajs, goal_point, save_dir, step):
 
 def main():
     # ---------- config ----------
-    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs/checkpoints/navdpflow_step_40000.pt"
-    save_root = "tests/mf_results_3"
+    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs_fm/checkpoints/navdpflow_step_149000.pt"
+    save_root = "tests/results_3"
     os.makedirs(save_root, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -117,7 +117,7 @@ def main():
     )
 
     # ---------- model ----------
-    model = NavDP_Policy_MeanFlow(
+    model = NavDP_Policy_Flow(
         image_size=224,
         memory_size=8,
         predict_size=24,

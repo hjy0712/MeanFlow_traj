@@ -30,7 +30,7 @@ class NavDP_Policy_MeanFlow(nn.Module):
                  token_dim=384,
                  channels=3,
                  device='cuda:0',
-                 solver_steps=50,
+                 solver_steps=1,
                  flow_ratio=0.5,
                  time_dist=('lognorm', -0.4, 1.0),
                  jvp_api='autograd'):
