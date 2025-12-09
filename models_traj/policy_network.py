@@ -64,7 +64,7 @@ class NavDP_Policy_Flow(nn.Module):
         self.cond_critic_mask[:,0:4] = float('-inf')
     
     # ---------- 核心改变：预测速度场（而不是噪声） ----------
-    def predict_velocity(self, actions, t, goal_embed, rgbd_embed):
+    def predict_velocity(self, actions, t, goal_embed, rgbd_embed, training=True):
         """
         actions: (B, T, 3) - 当前点（状态） —— 在采样时这是当前 x_t
         t: tensor shape (B,) or scalar time in [0,1] (float tensor)
@@ -83,6 +83,10 @@ class NavDP_Policy_Flow(nn.Module):
             # allow scalar passed in
             time_embeds = self.time_emb(t.to(self.device)).unsqueeze(1).repeat(actions.shape[0], 1, 1)
         
+        # 20% 的概率将 goal_embed 置为全零向量
+        if training and torch.rand(1).item() < 0.2:
+            goal_embed = torch.zeros_like(goal_embed)
+        
         # build cond embedding: consistent with original code ordering:
         cond_embedding = torch.cat([time_embeds, goal_embed, goal_embed, goal_embed, rgbd_embed], dim=1)
         cond_embedding = cond_embedding + self.cond_pos_embed(cond_embedding)
@@ -94,23 +98,23 @@ class NavDP_Policy_Flow(nn.Module):
         velocity = self.velocity_head(output)  # (B, T, 3)
         return velocity
 
-    def predict_mix_velocity(self, actions, t, goal_embeds, rgbd_embed):
-        """
-        多条件混合版本，goal_embeds 是 list/tuple [image_goal, point_goal, image_goal]（与原代码相仿）
-        """
-        action_embeds = self.input_embed(actions)
-        if not isinstance(t, torch.Tensor):
-            t = torch.tensor([t], dtype=torch.float32, device=self.device)
-        time_embeds = self.time_emb(t.to(self.device)).unsqueeze(1).tile((actions.shape[0],1,1))
-        cond_embedding = torch.cat([time_embeds, goal_embeds[0], goal_embeds[1], goal_embeds[2], rgbd_embed], dim=1)
-        cond_embedding = cond_embedding + self.cond_pos_embed(cond_embedding)
-        input_embedding = action_embeds + self.out_pos_embed(action_embeds)
-        output = self.decoder(tgt = input_embedding, memory = cond_embedding, tgt_mask = self.tgt_mask.to(self.device))
-        output = self.layernorm(output)
-        velocity = self.velocity_head(output)
-        return velocity
+    # def predict_mix_velocity(self, actions, t, goal_embeds, rgbd_embed):
+    #     """
+    #     多条件混合版本，goal_embeds 是 list/tuple [image_goal, point_goal, image_goal]（与原代码相仿）
+    #     """
+    #     action_embeds = self.input_embed(actions)
+    #     if not isinstance(t, torch.Tensor):
+    #         t = torch.tensor([t], dtype=torch.float32, device=self.device)
+    #     time_embeds = self.time_emb(t.to(self.device)).unsqueeze(1).tile((actions.shape[0],1,1))
+    #     cond_embedding = torch.cat([time_embeds, goal_embeds[0], goal_embeds[1], goal_embeds[2], rgbd_embed], dim=1)
+    #     cond_embedding = cond_embedding + self.cond_pos_embed(cond_embedding)
+    #     input_embedding = action_embeds + self.out_pos_embed(action_embeds)
+    #     output = self.decoder(tgt = input_embedding, memory = cond_embedding, tgt_mask = self.tgt_mask.to(self.device))
+    #     output = self.layernorm(output)
+    #     velocity = self.velocity_head(output)
+    #     return velocity
 
-    # ---------- critic 保持几乎不变 ----------
+    # # ---------- critic 保持几乎不变 ----------
     def predict_critic(self, predict_trajectory, rgbd_embed):
         nogoal_embed = torch.zeros_like(rgbd_embed[:,0:1])
         action_embeddings = self.input_embed(predict_trajectory)
@@ -139,7 +143,7 @@ class NavDP_Policy_Flow(nn.Module):
             t = ts[i]
             dt = ts[i] - ts[i+1]
             if mix_goals is None:
-                v = self.predict_velocity(x, torch.full((B,), t, device=self.device), cond_goal_embed, rgbd_embed)
+                v = self.predict_velocity(x, torch.full((B,), t, device=self.device), cond_goal_embed, rgbd_embed, training=False)
             else:
                 v = self.predict_mix_velocity(x, torch.full((B,), t, device=self.device), mix_goals, rgbd_embed)
             # Euler step: x_{t+dt} = x_t + v * dt
@@ -311,7 +315,7 @@ class NavDP_Policy_Flow(nn.Module):
             return all_trajectory.cpu().numpy(), critic_values.cpu().numpy(), positive_trajectory.cpu().numpy(), negative_trajectory.cpu().numpy()
 
     # ---------- 训练时用的基础 flow-matching loss 实现（可替换/扩展） ----------
-    def compute_flow_matching_loss(self, a_start, a_target, goal, goal_embed, rgbd_embed, mix_goals=None):
+    def compute_flow_matching_loss(self, a_start, a_target, goal_embed, rgbd_embed, mix_goals=None):
         B, T, _ = a_start.shape
         t = torch.rand(B, device=self.device)  # in (0,1)
         t_ = t.view(B,1,1)
@@ -332,7 +336,9 @@ class NavDP_Policy_Flow(nn.Module):
 
         # mean squared error
         loss = F.mse_loss(v_pred, v_target)
-        return loss
+        # 计算 MSE 值用于监控（与 loss 相同，因为 reduction='mean'）
+        mse_val = loss.detach() if isinstance(loss, torch.Tensor) else loss
+        return loss, mse_val
 
     def process_target_trajectory(self, a_target, a_start):
         B, T, point_dim = a_target.shape

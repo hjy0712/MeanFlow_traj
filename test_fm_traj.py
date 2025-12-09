@@ -84,7 +84,7 @@ def save_traj_txt(gt_traj, pred_trajs, goal_point, save_dir, step):
 
 def main():
     # ---------- config ----------
-    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs_fm/checkpoints/navdpflow_step_149000.pt"
+    ckpt_path = "/mnt/houjunyi/MeanFlow_traj/runs_fm/navdpflow_step_149000.pt"
     save_root = "tests/results_3"
     os.makedirs(save_root, exist_ok=True)
 
@@ -147,6 +147,7 @@ def main():
         goal_point = batch["batch_pg"].to(device)        # (1,3)
 
         with torch.no_grad():
+            import ipdb; ipdb.set_trace()
             trajs, _, _, _ = model.predict_pointgoal_action(
                 goal_point=goal_point,
                 input_images=input_images,

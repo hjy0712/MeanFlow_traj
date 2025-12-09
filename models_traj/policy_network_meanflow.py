@@ -31,7 +31,7 @@ class NavDP_Policy_MeanFlow(nn.Module):
                  channels=3,
                  device='cuda:0',
                  solver_steps=1,
-                 flow_ratio=0.5,
+                 flow_ratio=0.2, # 0.2 表示 20% 的轨迹被选择为t和r相等
                  time_dist=('lognorm', -0.4, 1.0),
                  jvp_api='autograd'):
         super().__init__()

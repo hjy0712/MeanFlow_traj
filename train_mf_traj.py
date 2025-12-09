@@ -41,11 +41,11 @@ def main():
     if accelerator.is_main_process: 
         print(f"Using {accelerator.num_processes} processes across {torch.cuda.device_count()} GPUs")
 
-    os.makedirs("runs/images", exist_ok=True)
-    os.makedirs("runs/checkpoints", exist_ok=True)
+    os.makedirs("runstest/images", exist_ok=True)
+    os.makedirs("runstest/checkpoints", exist_ok=True)
 
     if accelerator.is_main_process:
-        writer = SummaryWriter(log_dir="runs/tensorboard_logs")
+        writer = SummaryWriter(log_dir="runstest/tensorboard_logs")
 
     # ---------- dataset ----------
     # base_paths = [
@@ -60,7 +60,7 @@ def main():
         image_size=224,
         scene_data_scale=1.0,
         trajectory_data_scale=1.0,
-        debug=False,
+        debug=True,
         preload=False,
     )
     dataloader = DataLoader(
@@ -68,7 +68,7 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=4,
+        num_workers=0,
         collate_fn=navdp_collate_fn,
     )
     dataloader = cycle(dataloader)
@@ -111,6 +111,7 @@ def main():
 
             # 重复更新 repeat_per_batch 次
             for _ in range(repeat_per_batch):
+                print(input_images.shape, input_depths.shape, goal_point.shape)
                 rgbd_embed = net.rgbd_encoder(input_images, input_depths)
                 pointgoal_embed = net.point_encoder(goal_point).unsqueeze(1)
                 a_start = torch.randn_like(traj_target)

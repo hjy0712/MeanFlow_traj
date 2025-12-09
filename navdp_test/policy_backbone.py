@@ -53,7 +53,7 @@ class NavDP_RGBD_Backbone(nn.Module):
             
         self.depth_model = DepthAnythingV2(**model_configs['vits'])
         self.depth_model = self.depth_model.pretrained.float()
-        self.depth_model.train()
+        self.depth_model.eval()
         self.former_query = LearnablePositionalEncoding(384,self.memory_size*16)
         self.former_pe = LearnablePositionalEncoding(384,(self.memory_size+1)*256) 
         self.former_net = nn.TransformerDecoder(nn.TransformerDecoderLayer(384,8,batch_first=True),2)
